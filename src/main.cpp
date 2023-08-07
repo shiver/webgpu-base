@@ -3,8 +3,10 @@
 #include <GLFW/glfw3.h>
 #include "webgpu.cpp"
 
-void render(WebGPU *wgpu) {
-    WGPUTextureView textureView = wgpuSwapChainGetCurrentTextureView(wgpu->swapChain);
+static WebGPU wgpu;
+
+void render() {
+    WGPUTextureView textureView = wgpuSwapChainGetCurrentTextureView(wgpu.swapChain);
     WGPURenderPassColorAttachment attachment = {
         .view = textureView,
         .resolveTarget = NULL,
@@ -19,17 +21,17 @@ void render(WebGPU *wgpu) {
     };
 
     WGPUCommandEncoderDescriptor encoderDesc = { .label = "Command Encoder" };
-    WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(wgpu->device, &encoderDesc);
+    WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(wgpu.device, &encoderDesc);
 
     WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &rpDesc);
-    wgpuRenderPassEncoderSetPipeline(pass, wgpu->pipeline);
+    wgpuRenderPassEncoderSetPipeline(pass, wgpu.pipeline);
 
     wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
     wgpuRenderPassEncoderEnd(pass);
 
     WGPUCommandBufferDescriptor cmdBufferDesc = { .label = "Command Buffer" };
     WGPUCommandBuffer commands = wgpuCommandEncoderFinish(encoder, &cmdBufferDesc);
-    WGPUQueue queue = wgpuDeviceGetQueue(wgpu->device);
+    WGPUQueue queue = wgpuDeviceGetQueue(wgpu.device);
     wgpuQueueSubmit(queue, 1, &commands);
 
     wgpuCommandEncoderRelease(encoder);
@@ -46,12 +48,14 @@ int main() {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow *window = glfwCreateWindow(width, height, "WebGPU Base", NULL, NULL);
 
-    WebGPU wgpu = webgpu_init(window, width, height);
+    wgpu = webgpu_init(window, width, height);
 
-
+#if defined(__EMSCRIPTEN__)
+    emscripten_set_main_loop(render, 0, false);
+#else
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
-        render(&wgpu);
+        render();
         wgpuSwapChainPresent(wgpu.swapChain);
 
         // TODO: Not sure if this is necessary or not, or if something in the renderer
@@ -60,6 +64,7 @@ int main() {
         // more than once.
         wgpuDeviceTick(wgpu.device);
     }
+#endif
 
     return 0;
 }

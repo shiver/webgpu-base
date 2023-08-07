@@ -1,9 +1,9 @@
-cmake_minimum_required(VERSION 3.13) # CMake version check
+cmake_minimum_required(VERSION 3.13)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_CXX_STANDARD 20)           # Enable C++20 standard
+set(CMAKE_CXX_STANDARD 20)
 set(PYTHON_EXECUTABLE "d:/apps/Python39/python.exe")
 
-project(app)                         # Create project "app"
+project(app)
 add_executable(app "src/main.cpp")
 
 set(DAWN_DEBUG_BREAK_ON_ERROR ON)

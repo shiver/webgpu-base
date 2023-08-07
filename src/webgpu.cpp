@@ -5,17 +5,30 @@
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
 #else
-//#include <webgpu/webgpu_glfw.h>
+    #define GLFW_EXPOSE_NATIVE_WIN32
+    #include <GLFW/glfw3native.h>
+
 #endif
 
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
+struct WebGPU {
+    WGPUInstance instance;
+    WGPUSurface surface;
+    WGPUAdapter adapter;
+    WGPUDevice device;
+    WGPUSwapChain swapChain;
+    WGPURenderPipeline pipeline;
+    bool requestComplete;
+};
 
+WebGPU webgpu_init(GLFWwindow *window, uint32_t width, uint32_t height);
 static void onAdapterRequestEnded(WGPURequestAdapterStatus status, WGPUAdapter adapter, char const *message, void *userData);
 static void onDeviceRequestEnded(WGPURequestDeviceStatus status, WGPUDevice device, char const *message, void *userData);
 static void onDeviceError(WGPUErrorType type, char const *message, void *userData);
-static void onDeviceLog(WGPULoggingType type, char const *message, void *userData);
 static void onQueueDone(WGPUQueueWorkDoneStatus status, void *userData);
+
+#if !defined(__EMSCRIPTEN__)
+static void onDeviceLog(WGPULoggingType type, char const *message, void *userData);
+#endif
 
 const char shaderCode[] = R"(
     @vertex fn vertexMain(@builtin(vertex_index) i : u32) ->
@@ -28,43 +41,39 @@ const char shaderCode[] = R"(
     }
 )";
 
-struct WebGPU {
-    WGPUInstance instance;
-    WGPUSurface surface;
-    WGPUAdapter adapter;
-    WGPUDevice device;
-    WGPUSwapChain swapChain;
-    WGPURenderPipeline pipeline;
-    bool requestComplete;
-};
-
-struct UserData {
-    WGPUAdapter adapter = NULL;
-    bool requestEnded = false;
-};
-
 WebGPU webgpu_init(GLFWwindow *window, uint32_t width, uint32_t height) {
-    WebGPU wgpu = {.requestComplete = false};
+    WebGPU wgpu = { .requestComplete = false };
 
-    WGPUInstanceDescriptor desc = {.nextInChain = nullptr};
+    WGPUInstanceDescriptor desc = {.nextInChain = NULL};
     wgpu.instance = wgpuCreateInstance(&desc);
     assert(wgpu.instance);
 
-    printf("WebGPU instance = %p\n", wgpu.instance);
+    printf("WebGPU instance = %p\n", (void *)wgpu.instance);
 
+#if defined(__EMSCRIPTEN__)
+    (void)window;
+
+    WGPUSurfaceDescriptorFromCanvasHTMLSelector canvasDesc = {
+        .chain = { .sType = WGPUSType_SurfaceDescriptorFromCanvasHTMLSelector },
+        .selector = "#canvas"
+    };
+    WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&canvasDesc };
+    wgpu.surface = wgpuInstanceCreateSurface(wgpu.instance, &surfaceDesc);
+#else
     WGPUSurfaceDescriptorFromWindowsHWND sdDesc = {};
-    sdDesc.chain = { .next = NULL, .sType = WGPUSType_SurfaceDescriptorFromWindowsHWND };
+    sdDesc.chain = { .sType = WGPUSType_SurfaceDescriptorFromWindowsHWND };
     sdDesc.hwnd = glfwGetWin32Window(window);
     sdDesc.hinstance = GetModuleHandle(NULL);
 
     WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&sdDesc };
     wgpu.surface = wgpuInstanceCreateSurface(wgpu.instance, &surfaceDesc);
+#endif
     assert(wgpu.surface != NULL);
 
     WGPURequestAdapterOptions options = { .compatibleSurface = wgpu.surface };
     wgpuInstanceRequestAdapter(wgpu.instance, &options, onAdapterRequestEnded, (void *)&wgpu);
 
-    // Apparently we can assume that the call to `onAdapterRequestEnded` in synchronous, but
+    // Apparently we can assume that the call to `onAdapterRequestEnded` is synchronous, but
     // just to be sure we check the request has indeed been fulfilled
     assert(wgpu.requestComplete);
     assert(wgpu.adapter);
@@ -85,7 +94,9 @@ WebGPU webgpu_init(GLFWwindow *window, uint32_t width, uint32_t height) {
     wgpu.requestComplete = false;
 
     wgpuDeviceSetUncapturedErrorCallback(wgpu.device, onDeviceError, NULL);
+#if !defined(__EMSCRIPTEN__)
     wgpuDeviceSetLoggingCallback(wgpu.device, onDeviceLog, NULL);
+#endif
     WGPUQueue queue = wgpuDeviceGetQueue(wgpu.device);
     wgpuQueueOnSubmittedWorkDone(queue, 0, onQueueDone, NULL);
 
@@ -154,11 +165,15 @@ WebGPU webgpu_init(GLFWwindow *window, uint32_t width, uint32_t height) {
     assert(renderPipeline != NULL);
     wgpu.pipeline = renderPipeline;
 
+#if defined(__EMSCRIPTEN__)
+#else
     // Error callbacks are only triggered when the device "ticks". Right now
     // we don't have anything that triggers a tick, so if there is something wrong
     // that would prevent the render loop from working, we won't see any errors.
     // To make sure we don't have errors during WebGPU setup we force a tick to happen.
     wgpuDeviceTick(wgpu.device);
+#endif
+
     return wgpu;
 }
 
@@ -189,9 +204,11 @@ static void onDeviceError(WGPUErrorType type, char const *message, void * /*user
     if (message) fprintf(stderr, "  %s\n", message);
 }
 
+#if !defined(__EMSCRIPTEN__)
 static void onDeviceLog(WGPULoggingType type, char const *message, void * /*userData*/) {
     printf("Device log: [%d] %s\n", type, message);
 };
+#endif
 
 static void onQueueDone(WGPUQueueWorkDoneStatus status, void * /*userData*/) {
     printf("Queue done: %d\n", status);
