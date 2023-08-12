@@ -21,6 +21,13 @@ enum WebGPUState {
     WGPUState_Error,
 };
 
+struct Dimensions {
+    uint32_t width;
+    uint32_t height;
+};
+
+typedef void (*RenderCallback)();
+
 struct WebGPU {
     WGPUInstance instance;
     WGPUSurface surface;
@@ -29,18 +36,29 @@ struct WebGPU {
     WGPUSwapChain swapChain;
     WGPURenderPipeline pipeline;
 
+    RenderCallback render_callback;
+    Dimensions dimensions;
     WebGPUState state;
 };
 
-WebGPU webgpu_init(GLFWwindow *window);
-void wegpu_request_adapter(WebGPU *wgpu);
-void wegpu_request_device(WebGPU *wgpu);
-void webgpu_create_pipeline(uint32_t width, uint32_t height);
+// public functions
+WebGPU webgpu_init(uint32_t width, uint32_t height);
+void webgpu_poll_init_state(void *wgpu_ptr);
+#if defined(__EMSCRIPTEN__)
+void webgpu_create_surface(WebGPU *wgpu);
+#elif defined(__WIN32)
+void webgpu_create_surface(WebGPU *wgpu, GLFWwindow *window);
+#endif
+
+// private functions
+static void request_adapter(WebGPU *wgpu);
+static void request_device(WebGPU *wgpu);
+static void create_pipeline(WebGPU *wgpu);
+static void emscripten_switch_to_render_loop(void *arg);
 static void onAdapterRequestEnded(WGPURequestAdapterStatus status, WGPUAdapter adapter, char const *message, void *userData);
 static void onDeviceRequestEnded(WGPURequestDeviceStatus status, WGPUDevice device, char const *message, void *userData);
 static void onDeviceError(WGPUErrorType type, char const *message, void *userData);
 static void onQueueDone(WGPUQueueWorkDoneStatus status, void *userData);
-
 #if !defined(__EMSCRIPTEN__)
 static void onDeviceLog(WGPULoggingType type, char const *message, void *userData);
 #endif
@@ -56,7 +74,92 @@ const char shaderCode[] = R"(
     }
 )";
 
-void webgpu_request_adapter(WebGPU *wgpu) {
+#if defined(__EMSCRIPTEN__)
+void emscripten_switch_to_render_loop(void *wgpu_ptr) {
+    WebGPU *wgpu = (WebGPU *)wgpu_ptr;
+    emscripten_set_main_loop(wgpu->render_callback, 0, 0);
+}
+
+void webgpu_create_surface(WebGPU *wgpu, const char *selector) {
+    WGPUSurfaceDescriptorFromCanvasHTMLSelector canvasDesc = {
+        .chain = { .sType = WGPUSType_SurfaceDescriptorFromCanvasHTMLSelector },
+        .selector = selector
+    };
+    WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&canvasDesc };
+    wgpu->surface = wgpuInstanceCreateSurface(wgpu->instance, &surfaceDesc);
+    assert(wgpu->surface != NULL);
+}
+
+#else
+
+void webgpu_create_surface(WebGPU *wgpu, GLFWwindow *window) {
+    WGPUSurfaceDescriptorFromWindowsHWND sdDesc = {};
+    sdDesc.chain = { .sType = WGPUSType_SurfaceDescriptorFromWindowsHWND };
+    sdDesc.hwnd = glfwGetWin32Window(window);
+    sdDesc.hinstance = GetModuleHandle(NULL);
+
+    WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&sdDesc };
+    wgpu->surface = wgpuInstanceCreateSurface(wgpu->instance, &surfaceDesc);
+    assert(wgpu->surface != NULL);
+}
+
+#endif
+
+void webgpu_poll_init_state(void *wgpu_ptr) {
+    WebGPU *wgpu = (WebGPU *)wgpu_ptr;
+
+    switch (wgpu->state) {
+        case WGPUState_None:
+        case WGPUState_RequestingAdapter:
+        case WGPUState_RequestingDevice:
+            break;
+
+        case WGPUState_InstanceAcquired: {
+            request_adapter(wgpu);
+            break;
+        }
+
+        case WGPUState_AdapterAcquired: {
+            request_device(wgpu);
+            break;
+        }
+
+        case WGPUState_DeviceAcquired: {
+            create_pipeline(wgpu);
+            break;
+        }
+
+        case WGPUState_Ready: {
+#if defined(__EMSCRIPTEN__)
+            emscripten_async_call(emscripten_switch_to_render_loop, wgpu, 0);
+            emscripten_cancel_main_loop();
+#endif
+            break;
+        }
+
+        case WGPUState_Error: {
+            fprintf(stderr, "Unexpected error\n");
+            break;
+        }
+    }
+}
+
+WebGPU webgpu_init(uint32_t width, uint32_t height) {
+    Dimensions dims = { .width = width, .height = height };
+    WebGPU wgpu = { .dimensions = dims };
+
+    WGPUInstanceDescriptor desc = {.nextInChain = NULL};
+    wgpu.instance = wgpuCreateInstance(&desc);
+    assert(wgpu.instance);
+
+
+    wgpu.state = WGPUState_InstanceAcquired;
+    printf("WebGPU instance = %p\n", (void *)wgpu.instance);
+
+    return wgpu;
+}
+
+static void request_adapter(WebGPU *wgpu) {
     wgpu->state = WGPUState_RequestingAdapter;
     WGPURequestAdapterOptions options = {
         .compatibleSurface = wgpu->surface,
@@ -66,7 +169,7 @@ void webgpu_request_adapter(WebGPU *wgpu) {
 
 }
 
-void webgpu_request_device(WebGPU *wgpu) {
+static void request_device(WebGPU *wgpu) {
     wgpu->state = WGPUState_RequestingDevice;
     WGPUDeviceDescriptor dDesc = {
         .nextInChain = NULL,
@@ -79,7 +182,7 @@ void webgpu_request_device(WebGPU *wgpu) {
     wgpuAdapterRequestDevice(wgpu->adapter, &dDesc, onDeviceRequestEnded, (void *)wgpu);
 }
 
-void webgpu_create_pipeline(WebGPU *wgpu, uint32_t width, uint32_t height) {
+static void create_pipeline(WebGPU *wgpu) {
     wgpuDeviceSetUncapturedErrorCallback(wgpu->device, onDeviceError, NULL);
 #if !defined(__EMSCRIPTEN__)
     wgpuDeviceSetLoggingCallback(wgpu->device, onDeviceLog, NULL);
@@ -110,8 +213,8 @@ void webgpu_create_pipeline(WebGPU *wgpu, uint32_t width, uint32_t height) {
     WGPUSwapChainDescriptor scDesc = {
         .usage = WGPUTextureUsage_RenderAttachment,
         .format = WGPUTextureFormat_BGRA8Unorm,
-        .width = width,
-        .height = height,
+        .width = wgpu->dimensions.width,
+        .height = wgpu->dimensions.height,
         .presentMode = WGPUPresentMode_Fifo
     };
     WGPUSwapChain swapChain = wgpuDeviceCreateSwapChain(wgpu->device, wgpu->surface, &scDesc);
@@ -162,39 +265,6 @@ void webgpu_create_pipeline(WebGPU *wgpu, uint32_t width, uint32_t height) {
 #endif
 
     wgpu->state = WGPUState_Ready;
-}
-
-WebGPU webgpu_init(GLFWwindow *window) {
-    WebGPU wgpu = {};
-
-    WGPUInstanceDescriptor desc = {.nextInChain = NULL};
-    wgpu.instance = wgpuCreateInstance(&desc);
-    assert(wgpu.instance);
-
-#if defined(__EMSCRIPTEN__)
-    (void)window;
-
-    WGPUSurfaceDescriptorFromCanvasHTMLSelector canvasDesc = {
-        .chain = { .sType = WGPUSType_SurfaceDescriptorFromCanvasHTMLSelector },
-        .selector = "#canvas"
-    };
-    WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&canvasDesc };
-    wgpu.surface = wgpuInstanceCreateSurface(wgpu.instance, &surfaceDesc);
-#else
-    WGPUSurfaceDescriptorFromWindowsHWND sdDesc = {};
-    sdDesc.chain = { .sType = WGPUSType_SurfaceDescriptorFromWindowsHWND };
-    sdDesc.hwnd = glfwGetWin32Window(window);
-    sdDesc.hinstance = GetModuleHandle(NULL);
-
-    WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&sdDesc };
-    wgpu.surface = wgpuInstanceCreateSurface(wgpu.instance, &surfaceDesc);
-#endif
-    assert(wgpu.surface != NULL);
-
-    wgpu.state = WGPUState_InstanceAcquired;
-    printf("WebGPU instance = %p\n", (void *)wgpu.instance);
-
-    return wgpu;
 }
 
 static void onAdapterRequestEnded(WGPURequestAdapterStatus status, WGPUAdapter adapter, char const *message, void *pUserData) {

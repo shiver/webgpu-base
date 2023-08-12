@@ -1,6 +1,6 @@
-Build native:
+Build and run on Windows:
 ```shell
-$ cmake -B build && cmake --build build -j4
+$ cmake -B build && cmake --build build -j4 && build\Debug\app.exe
 ```
 
 Build web:
@@ -14,3 +14,5 @@ You won't be able to run the `HTML` file directly. Use Python (or something else
 $ cd build-web
 $ python -m http.server 8080
 ```
+
+Then in the browser go to `http://localhost:8080/build-web/app.html`.
