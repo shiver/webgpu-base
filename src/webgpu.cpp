@@ -37,6 +37,7 @@ struct WebGPU {
     WGPURenderPipeline pipeline;
 
     RenderCallback render_callback;
+    WGPUBackendType backend_type;
     Dimensions dimensions;
     WebGPUState state;
 };
@@ -46,7 +47,7 @@ WebGPU webgpu_init(uint32_t width, uint32_t height);
 void webgpu_poll_init_state(void *wgpu_ptr);
 #if defined(__EMSCRIPTEN__)
 void webgpu_create_surface(WebGPU *wgpu);
-#elif defined(__WIN32)
+#elif defined(_WIN32)
 void webgpu_create_surface(WebGPU *wgpu, GLFWwindow *window);
 #endif
 
@@ -163,7 +164,7 @@ static void request_adapter(WebGPU *wgpu) {
     wgpu->state = WGPUState_RequestingAdapter;
     WGPURequestAdapterOptions options = {
         .compatibleSurface = wgpu->surface,
-        .backendType = WGPUBackendType_Vulkan,
+        .backendType = wgpu->backend_type,
     };
     wgpuInstanceRequestAdapter(wgpu->instance, &options, onAdapterRequestEnded, (void *)wgpu);
 

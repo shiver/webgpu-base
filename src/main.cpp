@@ -50,6 +50,10 @@ int main() {
     wgpu = webgpu_init(WIDTH, HEIGHT);
     wgpu.render_callback = &render;
 
+#if defined(_WIN32)
+    wgpu.backend_type = WGPUBackendType_Vulkan;
+#endif
+
 #if defined(__EMSCRIPTEN__)
     (void)window;
     webgpu_create_surface(&wgpu, "#canvas");

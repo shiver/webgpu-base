@@ -1,3 +1,8 @@
+Clone the repo and related submodules:
+```shell
+$ git clone --recurse-submodules https://github.com/shiver/webgpu-base.git
+```
+
 Build and run on Windows:
 ```shell
 $ cmake -B build && cmake --build build -j4 && build\Debug\app.exe
