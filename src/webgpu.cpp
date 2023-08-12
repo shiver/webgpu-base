@@ -10,6 +10,17 @@
 
 #endif
 
+enum WebGPUState {
+    WGPUState_None,
+    WGPUState_InstanceAcquired,
+    WGPUState_RequestingAdapter,
+    WGPUState_AdapterAcquired,
+    WGPUState_RequestingDevice,
+    WGPUState_DeviceAcquired,
+    WGPUState_Ready,
+    WGPUState_Error,
+};
+
 struct WebGPU {
     WGPUInstance instance;
     WGPUSurface surface;
@@ -17,10 +28,14 @@ struct WebGPU {
     WGPUDevice device;
     WGPUSwapChain swapChain;
     WGPURenderPipeline pipeline;
-    bool requestComplete;
+
+    WebGPUState state;
 };
 
-WebGPU webgpu_init(GLFWwindow *window, uint32_t width, uint32_t height);
+WebGPU webgpu_init(GLFWwindow *window);
+void wegpu_request_adapter(WebGPU *wgpu);
+void wegpu_request_device(WebGPU *wgpu);
+void webgpu_create_pipeline(uint32_t width, uint32_t height);
 static void onAdapterRequestEnded(WGPURequestAdapterStatus status, WGPUAdapter adapter, char const *message, void *userData);
 static void onDeviceRequestEnded(WGPURequestDeviceStatus status, WGPUDevice device, char const *message, void *userData);
 static void onDeviceError(WGPUErrorType type, char const *message, void *userData);
@@ -41,43 +56,18 @@ const char shaderCode[] = R"(
     }
 )";
 
-WebGPU webgpu_init(GLFWwindow *window, uint32_t width, uint32_t height) {
-    WebGPU wgpu = { .requestComplete = false };
-
-    WGPUInstanceDescriptor desc = {.nextInChain = NULL};
-    wgpu.instance = wgpuCreateInstance(&desc);
-    assert(wgpu.instance);
-
-    printf("WebGPU instance = %p\n", (void *)wgpu.instance);
-
-#if defined(__EMSCRIPTEN__)
-    (void)window;
-
-    WGPUSurfaceDescriptorFromCanvasHTMLSelector canvasDesc = {
-        .chain = { .sType = WGPUSType_SurfaceDescriptorFromCanvasHTMLSelector },
-        .selector = "#canvas"
+void webgpu_request_adapter(WebGPU *wgpu) {
+    wgpu->state = WGPUState_RequestingAdapter;
+    WGPURequestAdapterOptions options = {
+        .compatibleSurface = wgpu->surface,
+        .backendType = WGPUBackendType_Vulkan,
     };
-    WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&canvasDesc };
-    wgpu.surface = wgpuInstanceCreateSurface(wgpu.instance, &surfaceDesc);
-#else
-    WGPUSurfaceDescriptorFromWindowsHWND sdDesc = {};
-    sdDesc.chain = { .sType = WGPUSType_SurfaceDescriptorFromWindowsHWND };
-    sdDesc.hwnd = glfwGetWin32Window(window);
-    sdDesc.hinstance = GetModuleHandle(NULL);
+    wgpuInstanceRequestAdapter(wgpu->instance, &options, onAdapterRequestEnded, (void *)wgpu);
 
-    WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&sdDesc };
-    wgpu.surface = wgpuInstanceCreateSurface(wgpu.instance, &surfaceDesc);
-#endif
-    assert(wgpu.surface != NULL);
+}
 
-    WGPURequestAdapterOptions options = { .compatibleSurface = wgpu.surface };
-    wgpuInstanceRequestAdapter(wgpu.instance, &options, onAdapterRequestEnded, (void *)&wgpu);
-
-    // Apparently we can assume that the call to `onAdapterRequestEnded` is synchronous, but
-    // just to be sure we check the request has indeed been fulfilled
-    assert(wgpu.requestComplete);
-    assert(wgpu.adapter);
-
+void webgpu_request_device(WebGPU *wgpu) {
+    wgpu->state = WGPUState_RequestingDevice;
     WGPUDeviceDescriptor dDesc = {
         .nextInChain = NULL,
         .label = "Device",
@@ -86,22 +76,19 @@ WebGPU webgpu_init(GLFWwindow *window, uint32_t width, uint32_t height) {
         .defaultQueue = { .nextInChain = NULL, .label = "Default queue" }
     };
 
-    wgpu.requestComplete = false;
-    wgpuAdapterRequestDevice(wgpu.adapter, &dDesc, onDeviceRequestEnded, (void *)&wgpu);
-    assert(wgpu.requestComplete);
-    assert(wgpu.device);
+    wgpuAdapterRequestDevice(wgpu->adapter, &dDesc, onDeviceRequestEnded, (void *)wgpu);
+}
 
-    wgpu.requestComplete = false;
-
-    wgpuDeviceSetUncapturedErrorCallback(wgpu.device, onDeviceError, NULL);
+void webgpu_create_pipeline(WebGPU *wgpu, uint32_t width, uint32_t height) {
+    wgpuDeviceSetUncapturedErrorCallback(wgpu->device, onDeviceError, NULL);
 #if !defined(__EMSCRIPTEN__)
-    wgpuDeviceSetLoggingCallback(wgpu.device, onDeviceLog, NULL);
+    wgpuDeviceSetLoggingCallback(wgpu->device, onDeviceLog, NULL);
 #endif
-    WGPUQueue queue = wgpuDeviceGetQueue(wgpu.device);
+    WGPUQueue queue = wgpuDeviceGetQueue(wgpu->device);
     wgpuQueueOnSubmittedWorkDone(queue, 0, onQueueDone, NULL);
 
     WGPUAdapterProperties properties = {};
-    wgpuAdapterGetProperties(wgpu.adapter, &properties);
+    wgpuAdapterGetProperties(wgpu->adapter, &properties);
     printf("\nAdapter:\n");
     printf("- vendorID: %d\n", properties.vendorID);
     printf("- deviceID: %d\n", properties.deviceID);
@@ -114,7 +101,7 @@ WebGPU webgpu_init(GLFWwindow *window, uint32_t width, uint32_t height) {
         printf("- driverDescription: %s\n", properties.driverDescription);
 
     WGPUSupportedLimits limits = {};
-    assert(wgpuDeviceGetLimits(wgpu.device, &limits));
+    wgpuDeviceGetLimits(wgpu->device, &limits);
     printf("\nDevice:\n");
     printf("- maxTextureDimension1D: %d\n", limits.limits.maxTextureDimension1D);
     printf("- maxTextureDimension2D: %d\n", limits.limits.maxTextureDimension2D);
@@ -127,15 +114,15 @@ WebGPU webgpu_init(GLFWwindow *window, uint32_t width, uint32_t height) {
         .height = height,
         .presentMode = WGPUPresentMode_Fifo
     };
-    WGPUSwapChain swapChain = wgpuDeviceCreateSwapChain(wgpu.device, wgpu.surface, &scDesc);
+    WGPUSwapChain swapChain = wgpuDeviceCreateSwapChain(wgpu->device, wgpu->surface, &scDesc);
     assert(swapChain != NULL);
-    wgpu.swapChain = swapChain;
+    wgpu->swapChain = swapChain;
 
     WGPUShaderModuleWGSLDescriptor wgslDesc = { .code = shaderCode };
     WGPUChainedStruct *chained = (WGPUChainedStruct *)&wgslDesc;
     chained->sType = WGPUSType_ShaderModuleWGSLDescriptor;
     WGPUShaderModuleDescriptor smDesc = { .nextInChain = chained };
-    WGPUShaderModule shaderModule = wgpuDeviceCreateShaderModule(wgpu.device, &smDesc);
+    WGPUShaderModule shaderModule = wgpuDeviceCreateShaderModule(wgpu->device, &smDesc);
 
     WGPUBlendState blendState = {
         .color = { .operation = WGPUBlendOperation_Add , .srcFactor = WGPUBlendFactor_SrcAlpha, .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha },
@@ -161,9 +148,9 @@ WebGPU webgpu_init(GLFWwindow *window, uint32_t width, uint32_t height) {
         .fragment = &fragmentState,
     };
 
-    WGPURenderPipeline renderPipeline = wgpuDeviceCreateRenderPipeline(wgpu.device, &rpDesc);
+    WGPURenderPipeline renderPipeline = wgpuDeviceCreateRenderPipeline(wgpu->device, &rpDesc);
     assert(renderPipeline != NULL);
-    wgpu.pipeline = renderPipeline;
+    wgpu->pipeline = renderPipeline;
 
 #if defined(__EMSCRIPTEN__)
 #else
@@ -171,32 +158,67 @@ WebGPU webgpu_init(GLFWwindow *window, uint32_t width, uint32_t height) {
     // we don't have anything that triggers a tick, so if there is something wrong
     // that would prevent the render loop from working, we won't see any errors.
     // To make sure we don't have errors during WebGPU setup we force a tick to happen.
-    wgpuDeviceTick(wgpu.device);
+    wgpuDeviceTick(wgpu->device);
 #endif
+
+    wgpu->state = WGPUState_Ready;
+}
+
+WebGPU webgpu_init(GLFWwindow *window) {
+    WebGPU wgpu = {};
+
+    WGPUInstanceDescriptor desc = {.nextInChain = NULL};
+    wgpu.instance = wgpuCreateInstance(&desc);
+    assert(wgpu.instance);
+
+#if defined(__EMSCRIPTEN__)
+    (void)window;
+
+    WGPUSurfaceDescriptorFromCanvasHTMLSelector canvasDesc = {
+        .chain = { .sType = WGPUSType_SurfaceDescriptorFromCanvasHTMLSelector },
+        .selector = "#canvas"
+    };
+    WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&canvasDesc };
+    wgpu.surface = wgpuInstanceCreateSurface(wgpu.instance, &surfaceDesc);
+#else
+    WGPUSurfaceDescriptorFromWindowsHWND sdDesc = {};
+    sdDesc.chain = { .sType = WGPUSType_SurfaceDescriptorFromWindowsHWND };
+    sdDesc.hwnd = glfwGetWin32Window(window);
+    sdDesc.hinstance = GetModuleHandle(NULL);
+
+    WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&sdDesc };
+    wgpu.surface = wgpuInstanceCreateSurface(wgpu.instance, &surfaceDesc);
+#endif
+    assert(wgpu.surface != NULL);
+
+    wgpu.state = WGPUState_InstanceAcquired;
+    printf("WebGPU instance = %p\n", (void *)wgpu.instance);
 
     return wgpu;
 }
 
 static void onAdapterRequestEnded(WGPURequestAdapterStatus status, WGPUAdapter adapter, char const *message, void *pUserData) {
-    WebGPU *userData = (WebGPU *)(pUserData);
+    WebGPU *wgpu = (WebGPU *)(pUserData);
     if (status != WGPURequestAdapterStatus_Success) {
         fprintf(stderr, "Request for adapter failed: %s\n", message);
         exit(1);
     }
 
-    userData->adapter = adapter;
-    userData->requestComplete = true;
+    assert(adapter);
+    wgpu->adapter = adapter;
+    wgpu->state = WGPUState_AdapterAcquired;
 }
 
 static void onDeviceRequestEnded(WGPURequestDeviceStatus status, WGPUDevice device, const char *message, void *pUserData) {
-    WebGPU *userData = (WebGPU *)(pUserData);
+    WebGPU *wgpu = (WebGPU *)(pUserData);
     if (status != WGPURequestDeviceStatus_Success) {
         printf("Request for device failed: %s\n", message);
         exit(1);
     }
 
-    userData->device = device;
-    userData->requestComplete = true;
+    assert(device);
+    wgpu->device = device;
+    wgpu->state = WGPUState_DeviceAcquired;
 }
 
 static void onDeviceError(WGPUErrorType type, char const *message, void * /*userData*/) {
