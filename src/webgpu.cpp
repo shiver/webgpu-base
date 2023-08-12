@@ -4,10 +4,9 @@
 #include <webgpu/webgpu.h>
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
-#else
-    #define GLFW_EXPOSE_NATIVE_WIN32
-    #include <GLFW/glfw3native.h>
-
+#elif defined(_WIN32)
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
 #endif
 
 enum WebGPUState {
@@ -55,13 +54,19 @@ void webgpu_create_surface(WebGPU *wgpu, GLFWwindow *window);
 static void request_adapter(WebGPU *wgpu);
 static void request_device(WebGPU *wgpu);
 static void create_pipeline(WebGPU *wgpu);
-static void emscripten_switch_to_render_loop(void *arg);
 static void onAdapterRequestEnded(WGPURequestAdapterStatus status, WGPUAdapter adapter, char const *message, void *userData);
 static void onDeviceRequestEnded(WGPURequestDeviceStatus status, WGPUDevice device, char const *message, void *userData);
 static void onDeviceError(WGPUErrorType type, char const *message, void *userData);
 static void onQueueDone(WGPUQueueWorkDoneStatus status, void *userData);
 #if !defined(__EMSCRIPTEN__)
 static void onDeviceLog(WGPULoggingType type, char const *message, void *userData);
+#endif
+#if defined(__EMSCRIPTEN__)
+static void emscripten_switch_to_render_loop(void *arg);
+#endif
+
+#if defined(__APPLE__)
+void set_metal_surface_descriptor(GLFWwindow *window, WGPUSurfaceDescriptorFromMetalLayer *desc);
 #endif
 
 const char shaderCode[] = R"(
@@ -94,17 +99,23 @@ void webgpu_create_surface(WebGPU *wgpu, const char *selector) {
 #else
 
 void webgpu_create_surface(WebGPU *wgpu, GLFWwindow *window) {
-    WGPUSurfaceDescriptorFromWindowsHWND sdDesc = {};
-    sdDesc.chain = { .sType = WGPUSType_SurfaceDescriptorFromWindowsHWND };
-    sdDesc.hwnd = glfwGetWin32Window(window);
-    sdDesc.hinstance = GetModuleHandle(NULL);
+#if defined(__APPLE__)
+    WGPUSurfaceDescriptorFromMetalLayer desc = {};
+    desc.chain = { .sType = WGPUSType_SurfaceDescriptorFromMetalLayer };
+    set_metal_surface_descriptor(window, &desc);
+#else
+    WGPUSurfaceDescriptorFromWindowsHWND desc = {};
+    desc.chain = { .sType = WGPUSType_SurfaceDescriptorFromWindowsHWND };
+    desc.hwnd = glfwGetWin32Window(window);
+    desc.hinstance = GetModuleHandle(NULL);
+#endif // else __APPLE__
 
-    WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&sdDesc };
+    WGPUSurfaceDescriptor surfaceDesc = { .nextInChain = (WGPUChainedStruct *)&desc };
     wgpu->surface = wgpuInstanceCreateSurface(wgpu->instance, &surfaceDesc);
     assert(wgpu->surface != NULL);
 }
 
-#endif
+#endif // else __EMSCRIPTEN__
 
 void webgpu_poll_init_state(void *wgpu_ptr) {
     WebGPU *wgpu = (WebGPU *)wgpu_ptr;
